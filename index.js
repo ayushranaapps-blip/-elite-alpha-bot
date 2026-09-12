@@ -5,7 +5,7 @@ import { config } from './lib/config.js';
 import { createPendingPayment, getOrCreateReferralCode, supabase } from './lib/db.js';
 import { checkPendingPayments, checkExpiredMembers } from './lib/jobs.js';
 import { postTrendingCoins, postNewLaunches } from './lib/marketAlerts.js';
-import { getTrendingSolanaTokens, getNewSolanaLaunches, getTokenDetails } from './lib/dexscreener.js';
+import { getTrendingSolanaTokens, getNewSolanaLaunches, getTokenDetails, passesRugFilter } from './lib/dexscreener.js';
 
 http.createServer((req, res) => res.end('Elite Alpha Bot is running')).listen(process.env.PORT || 3000);
 
@@ -99,21 +99,27 @@ client.on('interactionCreate', async (interaction) => {
     const [trending, launches] = await Promise.all([getTrendingSolanaTokens(), getNewSolanaLaunches()]);
     const pool = [...trending, ...launches];
 
-    if (pool.length === 0) {
-      await interaction.editReply('No coins available right now, try again in a bit.');
+    const withDetails = await Promise.all(
+      pool.map(async p => ({ token: p, details: await getTokenDetails(p.tokenAddress).catch(() => null) }))
+    );
+    const safe = withDetails.filter(x => passesRugFilter(x.details));
+
+    if (safe.length === 0) {
+      await interaction.editReply('No coins passed the rug-pull filter right now (low liquidity/volume/too new) — try again later.');
       return;
     }
 
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    const details = await getTokenDetails(pick.tokenAddress).catch(() => null);
+    const pick = safe[Math.floor(Math.random() * safe.length)];
+    const details = pick.details;
 
-    const symbol = details?.baseToken?.symbol || pick.tokenAddress.slice(0, 6);
+    const symbol = details?.baseToken?.symbol || pick.token.tokenAddress.slice(0, 6);
     const price = details?.priceUsd ? `$${Number(details.priceUsd).toFixed(6)}` : 'n/a';
     const change = details?.priceChange?.h24 != null ? `${details.priceChange.h24}%` : 'n/a';
-    const link = details?.url || `https://dexscreener.com/solana/${pick.tokenAddress}`;
+    const liquidity = details?.liquidity?.usd ? `$${Math.round(details.liquidity.usd).toLocaleString()}` : 'n/a';
+    const link = details?.url || `https://dexscreener.com/solana/${pick.token.tokenAddress}`;
 
     await interaction.editReply(
-      `🎲 **${symbol}**\nPrice: ${price} | 24h: ${change}\n${link}\n\n_Not financial advice — always DYOR before buying._`
+      `🎲 **${symbol}**\nPrice: ${price} | 24h: ${change} | Liquidity: ${liquidity}\n${link}\n\n_Passed basic rug filters (liquidity/volume/age) — always DYOR, this is not financial advice._`
     );
   }
 });
