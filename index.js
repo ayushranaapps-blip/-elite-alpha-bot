@@ -5,6 +5,7 @@ import { config } from './lib/config.js';
 import { createPendingPayment, getOrCreateReferralCode, supabase } from './lib/db.js';
 import { checkPendingPayments, checkExpiredMembers } from './lib/jobs.js';
 import { postTrendingCoins, postNewLaunches } from './lib/marketAlerts.js';
+import { getTrendingSolanaTokens, getNewSolanaLaunches, getTokenDetails } from './lib/dexscreener.js';
 
 http.createServer((req, res) => res.end('Elite Alpha Bot is running')).listen(process.env.PORT || 3000);
 
@@ -26,6 +27,9 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('referral')
       .setDescription('Get your referral code and see how much you have earned'),
+    new SlashCommandBuilder()
+      .setName('giverandomcoin')
+      .setDescription('Get a random trending or newly launched Solana memecoin'),
   ].map(c => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
@@ -87,6 +91,30 @@ client.on('interactionCreate', async (interaction) => {
       content: `Your referral code: **${code}**\nShare it — people use it in \`/subscribe\`.\nBalance earned: **$${(data?.balance_usd || 0).toFixed(2)}**`,
       ephemeral: true
     });
+  }
+
+  if (interaction.commandName === 'giverandomcoin') {
+    await interaction.deferReply();
+
+    const [trending, launches] = await Promise.all([getTrendingSolanaTokens(), getNewSolanaLaunches()]);
+    const pool = [...trending, ...launches];
+
+    if (pool.length === 0) {
+      await interaction.editReply('No coins available right now, try again in a bit.');
+      return;
+    }
+
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    const details = await getTokenDetails(pick.tokenAddress).catch(() => null);
+
+    const symbol = details?.baseToken?.symbol || pick.tokenAddress.slice(0, 6);
+    const price = details?.priceUsd ? `$${Number(details.priceUsd).toFixed(6)}` : 'n/a';
+    const change = details?.priceChange?.h24 != null ? `${details.priceChange.h24}%` : 'n/a';
+    const link = details?.url || `https://dexscreener.com/solana/${pick.tokenAddress}`;
+
+    await interaction.editReply(
+      `🎲 **${symbol}**\nPrice: ${price} | 24h: ${change}\n${link}\n\n_Not financial advice — always DYOR before buying._`
+    );
   }
 });
 
