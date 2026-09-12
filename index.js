@@ -1,22 +1,46 @@
-import { Client, GatewayIntentBits } from 'discord.js';
+import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import cron from 'node-cron';
 import http from 'http';
 import { config } from './lib/config.js';
 import { createPendingPayment, getOrCreateReferralCode, supabase } from './lib/db.js';
 import { checkPendingPayments, checkExpiredMembers } from './lib/jobs.js';
 
-// Render's free tier only stays alive as a "Web Service" that responds to pings.
-// This tiny server does nothing except say "OK" so an uptime pinger can keep the bot awake.
 http.createServer((req, res) => res.end('Elite Alpha Bot is running')).listen(process.env.PORT || 3000);
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
+async function registerCommands() {
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('subscribe')
+      .setDescription('Pay for Elite access and get instant access once your SOL payment is confirmed')
+      .addStringOption(opt =>
+        opt.setName('sol_address')
+          .setDescription('The Solana wallet address you will pay FROM')
+          .setRequired(true))
+      .addStringOption(opt =>
+        opt.setName('referral_code')
+          .setDescription('Referral code, if someone sent you here (optional)')
+          .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('referral')
+      .setDescription('Get your referral code and see how much you have earned'),
+  ].map(c => c.toJSON());
+
+  const rest = new REST({ version: '10' }).setToken(config.discordToken);
+  await rest.put(
+    Routes.applicationGuildCommands(config.clientId, config.guildId),
+    { body: commands }
+  );
+  console.log('Slash commands registered.');
+}
+
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // Check for new payments every 2 minutes
+  registerCommands().catch(console.error);
+
   cron.schedule('*/2 * * * *', () => checkPendingPayments(client).catch(console.error));
-  // Check for expired subscriptions once a day
   cron.schedule('0 0 * * *', () => checkExpiredMembers(client).catch(console.error));
 });
 
@@ -27,7 +51,6 @@ client.on('interactionCreate', async (interaction) => {
     const solAddress = interaction.options.getString('sol_address');
     const referralCode = interaction.options.getString('referral_code');
 
-    // First-time payer pays the entry fee, everyone after that pays the monthly fee
     const { data: existingMember } = await supabase
       .from('elite_members')
       .select('discord_id')
