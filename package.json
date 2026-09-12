@@ -1,0 +1,16 @@
+{
+  "name": "elite-alpha-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "register": "node register-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "@supabase/supabase-js": "^2.39.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.4.5"
+  }
+}
