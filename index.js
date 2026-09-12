@@ -2,10 +2,10 @@ import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'di
 import cron from 'node-cron';
 import http from 'http';
 import { config } from './lib/config.js';
-import { createPendingPayment, getOrCreateReferralCode, supabase } from './lib/db.js';
+import { createPendingPayment, getOrCreateReferralCode, supabase, getMySubscription, getReferralLeaderboard } from './lib/db.js';
 import { checkPendingPayments, checkExpiredMembers } from './lib/jobs.js';
 import { postTrendingCoins, postNewLaunches } from './lib/marketAlerts.js';
-import { getTrendingSolanaTokens, getNewSolanaLaunches, getTokenDetails, passesRugFilter } from './lib/dexscreener.js';
+import { getTrendingSolanaTokens, getNewSolanaLaunches, getTokenDetails, passesRugFilter, getRugCheckBreakdown } from './lib/dexscreener.js';
 
 http.createServer((req, res) => res.end('Elite Alpha Bot is running')).listen(process.env.PORT || 3000);
 
@@ -30,6 +30,26 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('giverandomcoin')
       .setDescription('Get a random trending or newly launched Solana memecoin'),
+    new SlashCommandBuilder()
+      .setName('price')
+      .setDescription('Check the live price of a specific Solana token')
+      .addStringOption(opt =>
+        opt.setName('address')
+          .setDescription('The token\'s contract address')
+          .setRequired(true)),
+    new SlashCommandBuilder()
+      .setName('rugcheck')
+      .setDescription('Run the rug-pull filter checks against a specific token')
+      .addStringOption(opt =>
+        opt.setName('address')
+          .setDescription('The token\'s contract address')
+          .setRequired(true)),
+    new SlashCommandBuilder()
+      .setName('mysubscription')
+      .setDescription('Check your Elite subscription status and expiry date'),
+    new SlashCommandBuilder()
+      .setName('leaderboard')
+      .setDescription('See the top referral earners'),
   ].map(c => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
@@ -121,6 +141,62 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.editReply(
       `🎲 **${symbol}**\nPrice: ${price} | 24h: ${change} | Liquidity: ${liquidity}\n${link}\n\n_Passed basic rug filters (liquidity/volume/age) — always DYOR, this is not financial advice._`
     );
+  }
+
+  if (interaction.commandName === 'price') {
+    await interaction.deferReply();
+    const address = interaction.options.getString('address');
+    const details = await getTokenDetails(address).catch(() => null);
+
+    if (!details) {
+      await interaction.editReply('Could not find that token on Dexscreener — double check the address.');
+      return;
+    }
+
+    const symbol = details.baseToken?.symbol || address.slice(0, 6);
+    const price = details.priceUsd ? `$${Number(details.priceUsd).toFixed(6)}` : 'n/a';
+    const change = details.priceChange?.h24 != null ? `${details.priceChange.h24}%` : 'n/a';
+    const liquidity = details.liquidity?.usd ? `$${Math.round(details.liquidity.usd).toLocaleString()}` : 'n/a';
+    const volume = details.volume?.h24 ? `$${Math.round(details.volume.h24).toLocaleString()}` : 'n/a';
+
+    await interaction.editReply(
+      `**${symbol}**\nPrice: ${price} | 24h change: ${change}\nLiquidity: ${liquidity} | 24h volume: ${volume}\n${details.url || ''}`
+    );
+  }
+
+  if (interaction.commandName === 'rugcheck') {
+    await interaction.deferReply();
+    const address = interaction.options.getString('address');
+    const details = await getTokenDetails(address).catch(() => null);
+    const result = getRugCheckBreakdown(details);
+
+    const lines = result.checks.map(c => `${c.ok ? '✅' : '❌'} ${c.label}`).join('\n');
+    await interaction.editReply(
+      `${result.passed ? '🟢 Passed basic rug filters' : '🔴 Failed one or more rug filters'}\n\n${lines}\n\n_This is a basic on-chain heuristic, not a guarantee — always DYOR._`
+    );
+  }
+
+  if (interaction.commandName === 'mysubscription') {
+    const sub = await getMySubscription(interaction.user.id);
+    if (!sub) {
+      await interaction.reply({ content: "You don't have an active Elite subscription. Use /subscribe to join.", ephemeral: true });
+      return;
+    }
+    const expires = new Date(sub.expires_at).toLocaleDateString();
+    await interaction.reply({
+      content: `Status: **${sub.status}**\nExpires: **${expires}**`,
+      ephemeral: true
+    });
+  }
+
+  if (interaction.commandName === 'leaderboard') {
+    const top = await getReferralLeaderboard(5);
+    if (!top || top.length === 0) {
+      await interaction.reply('No referrals yet — be the first with /referral!');
+      return;
+    }
+    const lines = top.map((r, i) => `${i + 1}. <@${r.discord_id}> — $${Number(r.balance_usd).toFixed(2)}`).join('\n');
+    await interaction.reply(`🏆 **Top Referral Earners**\n\n${lines}`);
   }
 });
 
