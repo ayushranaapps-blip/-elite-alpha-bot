@@ -4,6 +4,7 @@ import http from 'http';
 import { config } from './lib/config.js';
 import { createPendingPayment, getOrCreateReferralCode, supabase } from './lib/db.js';
 import { checkPendingPayments, checkExpiredMembers } from './lib/jobs.js';
+import { postTrendingCoins, postNewLaunches } from './lib/marketAlerts.js';
 
 http.createServer((req, res) => res.end('Elite Alpha Bot is running')).listen(process.env.PORT || 3000);
 
@@ -42,6 +43,8 @@ client.once('ready', () => {
 
   cron.schedule('*/2 * * * *', () => checkPendingPayments(client).catch(console.error));
   cron.schedule('0 0 * * *', () => checkExpiredMembers(client).catch(console.error));
+  cron.schedule('*/30 * * * *', () => postTrendingCoins(client).catch(console.error));
+  cron.schedule('*/10 * * * *', () => postNewLaunches(client).catch(console.error));
 });
 
 client.on('interactionCreate', async (interaction) => {
