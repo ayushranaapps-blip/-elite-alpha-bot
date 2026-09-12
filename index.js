@@ -1,8 +1,13 @@
 import { Client, GatewayIntentBits } from 'discord.js';
 import cron from 'node-cron';
+import http from 'http';
 import { config } from './lib/config.js';
 import { createPendingPayment, getOrCreateReferralCode, supabase } from './lib/db.js';
 import { checkPendingPayments, checkExpiredMembers } from './lib/jobs.js';
+
+// Render's free tier only stays alive as a "Web Service" that responds to pings.
+// This tiny server does nothing except say "OK" so an uptime pinger can keep the bot awake.
+http.createServer((req, res) => res.end('Elite Alpha Bot is running')).listen(process.env.PORT || 3000);
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
