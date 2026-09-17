@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'discord.js';
+import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import cron from 'node-cron';
 import http from 'http';
 import { config } from './lib/config.js';
@@ -7,10 +7,16 @@ import { checkPendingPayments, checkExpiredMembers } from './lib/jobs.js';
 import { postTrendingCoins, postNewLaunches } from './lib/marketAlerts.js';
 import { getTrendingSolanaTokens, getNewSolanaLaunches, getTokenDetails, passesRugFilter, getRugCheckBreakdown } from './lib/dexscreener.js';
 
+// Render's free tier only stays alive as a "Web Service" that responds to pings.
+// This tiny server does nothing except say "OK" so an uptime pinger can keep the bot awake.
 http.createServer((req, res) => res.end('Elite Alpha Bot is running')).listen(process.env.PORT || 3000);
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+});
 
+// Registers /subscribe and /referral automatically on every startup.
+// Safe to run every time — it just overwrites the same command list, no shell access needed.
 async function registerCommands() {
   const commands = [
     new SlashCommandBuilder()
@@ -65,8 +71,11 @@ client.once('ready', () => {
 
   registerCommands().catch(console.error);
 
+  // Check for new payments every 2 minutes
   cron.schedule('*/2 * * * *', () => checkPendingPayments(client).catch(console.error));
+  // Check for expired subscriptions once a day
   cron.schedule('0 0 * * *', () => checkExpiredMembers(client).catch(console.error));
+  // Post trending coins every 30 minutes, check for new launches every 10 minutes
   cron.schedule('*/30 * * * *', () => postTrendingCoins(client).catch(console.error));
   cron.schedule('*/10 * * * *', () => postNewLaunches(client).catch(console.error));
 });
@@ -78,6 +87,7 @@ client.on('interactionCreate', async (interaction) => {
     const solAddress = interaction.options.getString('sol_address');
     const referralCode = interaction.options.getString('referral_code');
 
+    // First-time payer pays the entry fee, everyone after that pays the monthly fee
     const { data: existingMember } = await supabase
       .from('elite_members')
       .select('discord_id')
@@ -119,6 +129,7 @@ client.on('interactionCreate', async (interaction) => {
     const [trending, launches] = await Promise.all([getTrendingSolanaTokens(), getNewSolanaLaunches()]);
     const pool = [...trending, ...launches];
 
+    // Fetch details for every candidate, then keep only ones that pass the rug filter
     const withDetails = await Promise.all(
       pool.map(async p => ({ token: p, details: await getTokenDetails(p.tokenAddress).catch(() => null) }))
     );
@@ -198,6 +209,43 @@ client.on('interactionCreate', async (interaction) => {
     const lines = top.map((r, i) => `${i + 1}. <@${r.discord_id}> — $${Number(r.balance_usd).toFixed(2)}`).join('\n');
     await interaction.reply(`🏆 **Top Referral Earners**\n\n${lines}`);
   }
+});
+
+// Auto-detects a Solana token address pasted in chat and replies with a price/image card
+const SOLANA_ADDRESS_REGEX = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+
+  const matches = message.content.match(SOLANA_ADDRESS_REGEX);
+  if (!matches || matches.length === 0) return;
+
+  const address = matches[0];
+  const details = await getTokenDetails(address).catch(() => null);
+  if (!details) return; // not a real/found token, ignore silently
+
+  const rug = getRugCheckBreakdown(details);
+  const symbol = details.baseToken?.symbol || address.slice(0, 6);
+  const price = details.priceUsd ? `$${Number(details.priceUsd).toFixed(6)}` : 'n/a';
+  const change = details.priceChange?.h24 != null ? `${details.priceChange.h24}%` : 'n/a';
+  const liquidity = details.liquidity?.usd ? `$${Math.round(details.liquidity.usd).toLocaleString()}` : 'n/a';
+  const volume = details.volume?.h24 ? `$${Math.round(details.volume.h24).toLocaleString()}` : 'n/a';
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${details.baseToken?.name || symbol} (${symbol})`)
+    .setURL(details.url || `https://dexscreener.com/solana/${address}`)
+    .setThumbnail(details.info?.imageUrl || null)
+    .setColor(rug.passed ? 0x22c55e : 0xef4444)
+    .addFields(
+      { name: 'Price', value: price, inline: true },
+      { name: '24h Change', value: change, inline: true },
+      { name: 'Liquidity', value: liquidity, inline: true },
+      { name: '24h Volume', value: volume, inline: true },
+      { name: 'Rug Filter', value: rug.passed ? '🟢 Passed' : '🔴 Failed', inline: true }
+    )
+    .setFooter({ text: 'Not financial advice — always DYOR' });
+
+  message.reply({ embeds: [embed] });
 });
 
 client.login(config.discordToken);
